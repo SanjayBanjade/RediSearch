@@ -11,13 +11,14 @@
 #include "stopwords.h"
 #include "gc.h"
 #include "synonym_map.h"
+#include "util/dict.h"
 #include "query_error.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef enum fieldType { FIELD_FULLTEXT, FIELD_NUMERIC, FIELD_GEO, FIELD_TAG } FieldType;
+typedef enum fieldType { FIELD_FULLTEXT=0, FIELD_NUMERIC, FIELD_GEO, FIELD_TAG } FieldType;
 
 #define NUMERIC_STR "NUMERIC"
 #define GEO_STR "GEO"
@@ -182,7 +183,7 @@ typedef uint16_t FieldSpecDedupeArray[SPEC_MAX_FIELDS];
 
 #define FIELD_BIT(fs) (((t_fieldMask)1) << (fs)->textOpts.id)
 
-typedef struct {
+typedef struct IndexSpec{
   char *name;
   FieldSpec *fields;
   int numFields;
@@ -208,6 +209,7 @@ typedef struct {
   RedisModuleString **indexStrs;
   struct IndexSpecCache *spcache;
   long long timeout;
+  dict* invertedIndexes;
 } IndexSpec;
 
 extern RedisModuleType *IndexSpecType;

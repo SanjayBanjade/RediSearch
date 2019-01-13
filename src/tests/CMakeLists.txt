@@ -1,8 +1,11 @@
 INCLUDE (CTest)
 
+ADD_LIBRARY("util" "util.c")
+
 FUNCTION(RSTEST name)
     ADD_EXECUTABLE("${name}" "${name}.c")
     TARGET_LINK_LIBRARIES("${name}" "redisearchS")
+    TARGET_LINK_LIBRARIES("${name}" "util")
     ADD_TEST(NAME "${name}" COMMAND "${name}" WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
 ENDFUNCTION()
 

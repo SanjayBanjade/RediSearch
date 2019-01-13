@@ -105,7 +105,7 @@ typedef struct {
 
 /* A node with a numeric filter */
 typedef struct {
-  const struct NumericFilter *nf;
+  struct NumericFilter *nf;
 } QueryNumericNode;
 
 typedef struct {
@@ -178,4 +178,5 @@ void QueryPhraseNode_AddChild(QueryNode *parent, QueryNode *child);
 void QueryUnionNode_AddChild(QueryNode *parent, QueryNode *child);
 
 void QueryTagNode_AddChildren(QueryNode *parent, QueryNode **children, size_t num);
+
 #endif

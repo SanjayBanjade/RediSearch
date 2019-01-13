@@ -113,6 +113,8 @@ typedef struct RedisModuleIO RedisModuleIO;
 typedef struct RedisModuleType RedisModuleType;
 typedef struct RedisModuleDigest RedisModuleDigest;
 typedef struct RedisModuleBlockedClient RedisModuleBlockedClient;
+typedef struct RedisModuleDict RedisModuleDict;
+typedef struct RedisModuleDictIter RedisModuleDictIter;
 
 typedef int (*RedisModuleCmdFunc)(RedisModuleCtx *ctx, RedisModuleString **argv, int argc);
 
@@ -141,6 +143,7 @@ REDISMODULE_API_FUNC(void *, RedisModule_Realloc)(void *ptr, size_t bytes);
 REDISMODULE_API_FUNC(void, RedisModule_Free)(void *ptr);
 REDISMODULE_API_FUNC(void *, RedisModule_Calloc)(size_t nmemb, size_t size);
 REDISMODULE_API_FUNC(char *, RedisModule_Strdup)(const char *str);
+REDISMODULE_API_FUNC(int, RedisModule_GetApi)(const char *, void *);
 REDISMODULE_API_FUNC(int, RedisModule_CreateCommand)
 (RedisModuleCtx *ctx, const char *name, RedisModuleCmdFunc cmdfunc, const char *strflags,
  int firstkey, int lastkey, int keystep);
@@ -269,10 +272,31 @@ REDISMODULE_API_FUNC(void, RedisModule_RetainString)(RedisModuleCtx *ctx, RedisM
 REDISMODULE_API_FUNC(int, RedisModule_StringCompare)(RedisModuleString *a, RedisModuleString *b);
 REDISMODULE_API_FUNC(RedisModuleCtx *, RedisModule_GetContextFromIO)(RedisModuleIO *io);
 REDISMODULE_API_FUNC(long long, RedisModule_Milliseconds)(void);
-REDISMODULE_API_FUNC(void, RedisModule_DigestAddStringBuffer)
-(RedisModuleDigest *md, unsigned char *ele, size_t len);
+REDISMODULE_API_FUNC(void, RedisModule_DigestAddStringBuffer)(RedisModuleDigest *md, unsigned char *ele, size_t len);
 REDISMODULE_API_FUNC(void, RedisModule_DigestAddLongLong)(RedisModuleDigest *md, long long ele);
 REDISMODULE_API_FUNC(void, RedisModule_DigestEndSequence)(RedisModuleDigest *md);
+REDISMODULE_API_FUNC(RedisModuleDict *, RedisModule_CreateDict)(RedisModuleCtx *ctx);
+REDISMODULE_API_FUNC(void, RedisModule_FreeDict)(RedisModuleCtx *ctx, RedisModuleDict *d);
+REDISMODULE_API_FUNC(uint64_t, RedisModule_DictSize)(RedisModuleDict *d);
+REDISMODULE_API_FUNC(int, RedisModule_DictSetC)(RedisModuleDict *d, void *key, size_t keylen, void *ptr);
+REDISMODULE_API_FUNC(int, RedisModule_DictReplaceC)(RedisModuleDict *d, void *key, size_t keylen, void *ptr);
+REDISMODULE_API_FUNC(int, RedisModule_DictSet)(RedisModuleDict *d, RedisModuleString *key, void *ptr);
+REDISMODULE_API_FUNC(int, RedisModule_DictReplace)(RedisModuleDict *d, RedisModuleString *key, void *ptr);
+REDISMODULE_API_FUNC(void*, RedisModule_DictGetC)(RedisModuleDict *d, void *key, size_t keylen, int *nokey);
+REDISMODULE_API_FUNC(void*, RedisModule_DictGet)(RedisModuleDict *d, RedisModuleString *key, int *nokey);
+REDISMODULE_API_FUNC(int, RedisModule_DictDelC)(RedisModuleDict *d, void *key, size_t keylen, void *oldval);
+REDISMODULE_API_FUNC(int, RedisModule_DictDel)(RedisModuleDict *d, RedisModuleString *key, void *oldval);
+REDISMODULE_API_FUNC(RedisModuleDictIter *, RedisModule_DictIteratorStartC)(RedisModuleDict *d, const char *op, void *key, size_t keylen);
+REDISMODULE_API_FUNC(RedisModuleDictIter *, RedisModule_DictIteratorStart)(RedisModuleDict *d, const char *op, RedisModuleString *key);
+REDISMODULE_API_FUNC(void, RedisModule_DictIteratorStop)(RedisModuleDictIter *di);
+REDISMODULE_API_FUNC(int, RedisModule_DictIteratorReseekC)(RedisModuleDictIter *di, const char *op, void *key, size_t keylen);
+REDISMODULE_API_FUNC(int, RedisModule_DictIteratorReseek)(RedisModuleDictIter *di, const char *op, RedisModuleString *key);
+REDISMODULE_API_FUNC(void *, RedisModule_DictNextC)(RedisModuleDictIter *di, size_t *keylen, void **dataptr);
+REDISMODULE_API_FUNC(void *, RedisModule_DictPrevC)(RedisModuleDictIter *di, size_t *keylen, void **dataptr);
+REDISMODULE_API_FUNC(RedisModuleString *, RedisModule_DictNext)(RedisModuleCtx *ctx, RedisModuleDictIter *di, void **dataptr);
+REDISMODULE_API_FUNC(RedisModuleString *, RedisModule_DictPrev)(RedisModuleCtx *ctx, RedisModuleDictIter *di, void **dataptr);
+REDISMODULE_API_FUNC(int, RedisModule_DictCompareC)(RedisModuleDictIter *di, const char *op, void *key, size_t keylen);
+REDISMODULE_API_FUNC(int, RedisModule_DictCompare)(RedisModuleDictIter *di, const char *op, RedisModuleString *key);
 
 /* Experimental APIs */
 #ifdef REDISMODULE_EXPERIMENTAL_API
@@ -292,6 +316,7 @@ REDISMODULE_API_FUNC(void, RedisModule_ThreadSafeContextUnlock)(RedisModuleCtx *
 #endif
 
 #define REDISMODULE_XAPI_STABLE(X) \
+  X(GetApi)                         \
   X(Alloc)                         \
   X(Calloc)                        \
   X(Free)                          \
@@ -392,7 +417,29 @@ REDISMODULE_API_FUNC(void, RedisModule_ThreadSafeContextUnlock)(RedisModuleCtx *
   X(Milliseconds)                  \
   X(DigestAddStringBuffer)         \
   X(DigestAddLongLong)             \
-  X(DigestEndSequence)
+  X(DigestEndSequence)             \
+  X(CreateDict);                   \
+  X(FreeDict);                     \
+  X(DictSize);                     \
+  X(DictSetC);                     \
+  X(DictReplaceC);                 \
+  X(DictSet);                      \
+  X(DictReplace);                  \
+  X(DictGetC);                     \
+  X(DictGet);                      \
+  X(DictDelC);                     \
+  X(DictDel);                      \
+  X(DictIteratorStartC);           \
+  X(DictIteratorStart);            \
+  X(DictIteratorStop);             \
+  X(DictIteratorReseekC);          \
+  X(DictIteratorReseek);           \
+  X(DictNextC);                    \
+  X(DictPrevC);                    \
+  X(DictNext);                     \
+  X(DictPrev);                     \
+  X(DictCompare);                  \
+  X(DictCompareC);                 \
 
 #define REDISMODULE_XAPI_EXPERIMENTAL(X) \
   X(GetThreadSafeContext)                \
@@ -413,8 +460,6 @@ REDISMODULE_API_FUNC(void, RedisModule_ThreadSafeContextUnlock)(RedisModuleCtx *
 #endif
 
 typedef int (*RedisModule_GetApiFunctionType)(const char *name, void *pp);
-
-REDISMODULE_API_FUNC(int, RedisModule_GetApi)(const char *, void *);
 
 /* This is included inline inside each Redis module. */
 static int RedisModule_Init(RedisModuleCtx *ctx, const char *name, int ver, int apiver)

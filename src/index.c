@@ -42,6 +42,8 @@ typedef struct {
   int quickExit;
   double weight;
   uint64_t len;
+  RedisModuleDict *dict;
+  RedisModuleDictIter* iter;
 } UnionIterator;
 
 static inline t_docId UI_LastDocId(void *ctx) {
@@ -111,6 +113,8 @@ IndexIterator *NewUnionIterator(IndexIterator **its, int num, DocTable *dt, int 
   ctx->len = 0;
   ctx->quickExit = quickExit;
   ctx->its = calloc(ctx->num, sizeof(*ctx->its));
+  ctx->dict = NULL;
+  ctx->iter = NULL;
 
   // bind the union iterator calls
   IndexIterator *it = &ctx->base;
@@ -130,67 +134,96 @@ IndexIterator *NewUnionIterator(IndexIterator **its, int num, DocTable *dt, int 
 
 static inline int UI_Read(void *ctx, RSIndexResult **hit) {
   UnionIterator *ui = ctx;
-  // nothing to do
-  if (ui->num == 0 || !IITER_HAS_NEXT(&ui->base)) {
-    IITER_SET_EOF(&ui->base);
-    return INDEXREAD_EOF;
-  }
-
-  int numActive = 0;
-  AggregateResult_Reset(CURRENT_RECORD(ui));
-
-  do {
-
-    // find the minimal iterator
-    t_docId minDocId = UINT32_MAX;
-    IndexIterator *minIt = NULL;
-    numActive = 0;
-    int rc = INDEXREAD_EOF;
-    unsigned nits = ui->num;
-
+  unsigned nits = ui->num;
+  if(!ui->dict){
+    RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(NULL);
+    ui->dict = RedisModule_CreateDict(ctx);
     for (unsigned i = 0; i < nits; i++) {
       IndexIterator *it = ui->its[i];
-      RSIndexResult *res = IITER_CURRENT_RECORD(it);
-      rc = INDEXREAD_OK;
-      // if this hit is behind the min id - read the next entry
-      // printf("ui->docIds[%d]: %d, ui->minDocId: %d\n", i, ui->docIds[i], ui->minDocId);
-      while (it->minId <= ui->minDocId && rc != INDEXREAD_EOF) {
-        rc = INDEXREAD_NOTFOUND;
-        // read while we're not at the end and perhaps the flags do not match
-        while (rc == INDEXREAD_NOTFOUND) {
-          rc = it->Read(it->ctx, &res);
-          it->minId = res->docId;
+      RSIndexResult *res;
+      int rc = it->Read(it->ctx, &res);
+      // read while we're not at the end and perhaps the flags do not match
+      while (rc != INDEXREAD_EOF) {
+        RSIndexResult *accumulatedRes = RedisModule_DictGetC(ui->dict, &(res->docId), sizeof(t_docId), NULL);
+        if(!accumulatedRes){
+          accumulatedRes = NewUnionResult(ui->num, ui->weight);
+          RedisModule_DictSetC(ui->dict, &(res->docId), sizeof(t_docId), accumulatedRes);
         }
-      }
-
-      if (rc != INDEXREAD_EOF) {
-        numActive++;
-      } else {
-        // Remove this from the active list
-        i = UI_RemoveExhausted(ui, i);
-        nits = ui->num;
-        continue;
-      }
-
-      if (rc == INDEXREAD_OK && res->docId <= minDocId) {
-        minDocId = res->docId;
-        minIt = it;
+        AggregateResult_AddChild(accumulatedRes, res);
+        rc = it->Read(it->ctx, &res);
       }
     }
 
-    // take the minimum entry and collect all results matching to it
-    if (minIt) {
-      UI_SkipTo(ui, minIt->minId, hit);
-      // return INDEXREAD_OK;
-      ui->minDocId = minIt->minId;
-      ui->len++;
-      return INDEXREAD_OK;
-    }
-
-  } while (numActive > 0);
-  IITER_SET_EOF(&ui->base);
-
-  return INDEXREAD_EOF;
+    ui->iter = RedisModule_DictIteratorStartC(ui->dict, "^", NULL, 0);
+  }
+  RSIndexResult *accumulatedRes;
+  t_docId* docid = RedisModule_DictNextC(ui->iter, NULL, (void**)&accumulatedRes);
+  if(!docid){
+    return INDEXREAD_EOF;
+  }
+  *hit = accumulatedRes;
+  return INDEXREAD_OK;
+  // nothing to do
+//  if (ui->num == 0 || !IITER_HAS_NEXT(&ui->base)) {
+//    IITER_SET_EOF(&ui->base);
+//    return INDEXREAD_EOF;
+//  }
+//
+//  int numActive = 0;
+//  AggregateResult_Reset(CURRENT_RECORD(ui));
+//
+//  do {
+//
+//    // find the minimal iterator
+//    t_docId minDocId = UINT32_MAX;
+//    IndexIterator *minIt = NULL;
+//    numActive = 0;
+//    int rc = INDEXREAD_EOF;
+//    unsigned nits = ui->num;
+//
+//    for (unsigned i = 0; i < nits; i++) {
+//      IndexIterator *it = ui->its[i];
+//      RSIndexResult *res = IITER_CURRENT_RECORD(it);
+//      rc = INDEXREAD_OK;
+//      // if this hit is behind the min id - read the next entry
+//      // printf("ui->docIds[%d]: %d, ui->minDocId: %d\n", i, ui->docIds[i], ui->minDocId);
+//      while (it->minId <= ui->minDocId && rc != INDEXREAD_EOF) {
+//        rc = INDEXREAD_NOTFOUND;
+//        // read while we're not at the end and perhaps the flags do not match
+//        while (rc == INDEXREAD_NOTFOUND) {
+//          rc = it->Read(it->ctx, &res);
+//          it->minId = res->docId;
+//        }
+//      }
+//
+//      if (rc != INDEXREAD_EOF) {
+//        numActive++;
+//      } else {
+//        // Remove this from the active list
+//        i = UI_RemoveExhausted(ui, i);
+//        nits = ui->num;
+//        continue;
+//      }
+//
+//      if (rc == INDEXREAD_OK && res->docId <= minDocId) {
+//        minDocId = res->docId;
+//        minIt = it;
+//      }
+//    }
+//
+//    // take the minimum entry and collect all results matching to it
+//    if (minIt) {
+//      UI_SkipTo(ui, minIt->minId, hit);
+//      // return INDEXREAD_OK;
+//      ui->minDocId = minIt->minId;
+//      ui->len++;
+//      return INDEXREAD_OK;
+//    }
+//
+//  } while (numActive > 0);
+//  IITER_SET_EOF(&ui->base);
+//
+//  return INDEXREAD_EOF;
 }
 
 static int UI_Next(void *ctx) {

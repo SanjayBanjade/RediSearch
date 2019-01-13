@@ -14,6 +14,7 @@
 #include "tag_index.h"
 #include "redis_index.h"
 #include "indexer.h"
+#include "redisearch_api.h"
 
 void (*IndexSpec_OnCreate)(const IndexSpec *) = NULL;
 
@@ -474,6 +475,114 @@ int IndexSpec_AddFieldsRedisArgs(IndexSpec *sp, RedisModuleString **argv, int ar
     args[i] = RedisModule_StringPtrLen(argv[i], NULL);
   }
   return IndexSpec_AddFields(sp, args, argc, status);
+}
+
+RediSeachStatus RS_IndexSpecAddField(IndexSpec* sp, RediSearch_Field* field){
+  int textId = -1;
+  for (size_t ii = 0; ii < sp->numFields; ++ii) {
+    const FieldSpec *fs = sp->fields + ii;
+    if (fs->type == FIELD_FULLTEXT) {
+      textId = MAX(textId, fs->textOpts.id);
+    }
+  }
+
+  if (field->fieldType == FIELD_FULLTEXT && textId + 1 == SPEC_MAX_FIELD_ID) {
+    return REDISMODULE_ERR;
+  }
+
+  sp->fields = rm_realloc(sp->fields, sizeof(*sp->fields) * (sp->numFields + 1));
+  FieldSpec *fs = sp->fields + sp->numFields;
+  memset(fs, 0, sizeof(*fs));
+
+  fs->index = sp->numFields;
+  fs->type = field->fieldType;
+  fs->name = rm_strdup(field->fieldName);
+
+  if (field->fieldType == FIELD_FULLTEXT){
+    fs->textOpts.id = textId + 1;
+    fs->textOpts.weight = 1.0;
+  }
+
+  if (field->fieldType == FIELD_TAG){
+    fs->tagOpts.separator = ',';
+    fs->tagOpts.flags = TAG_FIELD_DEFAULT_FLAGS;
+  }
+
+  ++sp->numFields;
+
+  return REDISMODULE_OK;
+}
+
+IndexSpec* RS_CreateIndexSpec(const char* specName, RediSearch_Field* fields, size_t len){
+  IndexSpec* sp = NewIndexSpec(specName, 0);
+	sp->flags |= Index_Temporary;
+	sp->invertedIndexes = dictCreate(&dictTypeHeapStrings, NULL);
+	for(size_t i = 0 ; i < len ; ++i){
+	  RediSearch_Field* field = fields + i;
+	  if(RS_IndexSpecAddField(sp, field) != REDISMODULE_OK){
+	    // todo: free the index!!!
+	    return NULL;
+	  }
+	}
+	return sp;
+}
+
+RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, RediSearch_FieldVal* vals, size_t len){
+  Document doc;
+  AddDocumentOptions opts = {0};
+  opts.options = 0;
+  opts.options |= DOCUMENT_ADD_NOSAVE;
+  opts.options |= DOCUMENT_ADD_REPLACE;
+
+  RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(NULL);
+
+  RedisModuleString* docIdRedisStr = RedisModule_CreateString(ctx, docId, strlen(docId));
+  RedisModuleString* valRedisStr[len];
+  Document_Init(&doc, docIdRedisStr, 1.0, len, DEFAULT_LANGUAGE, NULL, 0);
+  for(size_t i = 0 ; i < len ; ++i){
+    RediSearch_FieldVal* val = vals + i;
+    const FieldSpec *fs = IndexSpec_GetField(spec, val->fieldName, strlen(val->fieldName));
+    valRedisStr[i] = NULL;
+    if(fs->type == FIELD_NUMERIC){
+      valRedisStr[i] = RedisModule_CreateStringPrintf(ctx, "%lf", val->val.doubleVal);
+    }else{
+      valRedisStr[i] = RedisModule_CreateString(ctx, val->val.str, strlen(val->val.str));
+    }
+    doc.fields[i].name = val->fieldName;
+    doc.fields[i].text = valRedisStr[i];
+  }
+  Document_Detach(&doc, ctx);
+
+  for(size_t i = 0 ; i < len ; ++i){
+    RedisModule_FreeString(ctx, valRedisStr[i]);
+  }
+  RedisModule_FreeString(ctx, docIdRedisStr);
+
+  RedisModule_FreeThreadSafeContext(ctx);
+
+
+  RedisSearchCtx sctx = {.redisCtx = NULL, .spec = spec};
+
+  // If the ID is 0, then the document does not exist.
+  t_docId exists = DocTable_GetId(&spec->docs, docId, strlen(docId));
+
+  if (!exists) {
+    // If the document does not exist, remove replace/partial settings
+    opts.options &= ~(DOCUMENT_ADD_REPLACE);
+  }
+
+  QueryError status = {0};
+  RSAddDocumentCtx *aCtx = NewAddDocumentCtx(spec, &doc, &status);
+  if (aCtx == NULL) {
+    Document_FreeDetached(&doc, ctx);
+    return REDISMODULE_ERR;
+  }
+
+  aCtx->stateFlags |= ACTX_F_NOBLOCK;
+
+  AddDocumentCtx_Submit(aCtx, &sctx, opts.options);
+
+  return REDISMODULE_OK;
 }
 
 /* The format currently is FT.CREATE {index} [NOOFFSETS] [NOFIELDS]

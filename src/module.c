@@ -28,6 +28,7 @@
 #include "dictionary.h"
 #include "suggest.h"
 #include "numeric_index.h"
+#include "redisearch_api.h"
 
 #define LOAD_INDEX(ctx, srcname, write)                                                     \
   ({                                                                                        \
@@ -37,6 +38,12 @@
     }                                                                                       \
     sptmp;                                                                                  \
   })
+
+#define REGISTER_API(name, registerApiCallback) \
+    if(registerApiCallback("RediSearch_" #name, RS_ ## name)){\
+        printf("could not register RediSearch_" #name "\r\n");\
+        return false;\
+    }
 
 /* FT.SETPAYLOAD {index} {docId} {payload} */
 int SetPayloadCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
@@ -617,7 +624,7 @@ int TagValsCommand(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
     goto cleanup;
   }
 
-  TagIndex *idx = TagIndex_Open(ctx, TagIndex_FormatName(sctx, field), 0, NULL);
+  TagIndex *idx = TagIndex_Open(sctx, TagIndex_FormatName(sctx, field), 0, NULL);
   if (!idx) {
     RedisModule_ReplyWithArray(ctx, 0);
     goto cleanup;
@@ -1009,6 +1016,43 @@ static int validateAofSettings(RedisModuleCtx *ctx) {
   return rc;
 }
 
+static int RS_CheckApiVersionCompatibility(int currVersion){
+  if(REDISEARCH_LOW_LEVEL_API_VERSION == currVersion){
+    return REDISMODULE_OK;
+  }
+  return REDISMODULE_ERR;
+}
+
+RediSeachStatus RS_IndexSpecAddField(IndexSpec* sp, RediSearch_Field* field);
+IndexSpec* RS_CreateIndexSpec(const char* specName, RediSearch_Field* fields, size_t len);
+RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, RediSearch_FieldVal* vals, size_t len);
+QueryNode* RS_CreateUnionNode(IndexSpec* spec, const char* fieldName);
+void RS_UnionNodeAddChild(QueryNode* unionNode, QueryNode* child);
+QueryNode* RS_CreateNumericNode(IndexSpec* spec, const char* fieldName, double min, double max, int inclusiveMin, int inclusiveMax);
+QueryNode* RS_CreateTokenNode(IndexSpec* spec, const char* fieldName, const char* token, int flag);
+QueryNode* RS_CreateTagNode(IndexSpec* spec, const char* fieldName, const char* tag, int flag);
+ResultsIterator* RS_GetResultsIterator(IndexSpec* spec, QueryNode* qn);
+const char* RS_ResultsIteratorNext(IndexSpec* spec, ResultsIterator* iter);
+void RS_ResultsIteratorFree(ResultsIterator* iter);
+
+int moduleRegisterApi(const char *funcname, void *funcptr);
+
+static bool RediSearch_RegisterApi(int (*registerApiCallback)(const char *funcname, void *funcptr)){
+  REGISTER_API(CheckApiVersionCompatibility, registerApiCallback);
+  REGISTER_API(CreateIndexSpec, registerApiCallback);
+  REGISTER_API(IndexSpecAddField, registerApiCallback);
+  REGISTER_API(IndexSpecAddDocument, registerApiCallback);
+  REGISTER_API(CreateUnionNode, registerApiCallback);
+  REGISTER_API(UnionNodeAddChild, registerApiCallback);
+  REGISTER_API(CreateNumericNode, registerApiCallback);
+  REGISTER_API(CreateTagNode, registerApiCallback);
+  REGISTER_API(CreateTokenNode, registerApiCallback);
+  REGISTER_API(GetResultsIterator, registerApiCallback);
+  REGISTER_API(ResultsIteratorNext, registerApiCallback);
+  REGISTER_API(ResultsIteratorFree, registerApiCallback);
+  return true;
+}
+
 int RediSearch_InitModuleInternal(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
   // Check that redis supports thread safe context. RC3 or below doesn't
@@ -1018,6 +1062,13 @@ int RediSearch_InitModuleInternal(RedisModuleCtx *ctx, RedisModuleString **argv,
                     "\t\t\t\tPlease use Redis 4.0.0 or later from https://redis.io/download\n"
                     "\t\t\t\tRedis will exit now!");
     return REDISMODULE_ERR;
+  }
+
+  if(!RediSearch_RegisterApi(moduleRegisterApi)){
+    RedisModule_Log(ctx, "warning", "could not register RediSearch api");
+    return REDISMODULE_ERR;
+  }else{
+    RedisModule_Log(ctx, "notice", "RediSearch low level api version %d registered successfully", REDISEARCH_LOW_LEVEL_API_VERSION);
   }
 
   // Print version string!

@@ -166,7 +166,9 @@ RSAddDocumentCtx *NewAddDocumentCtx(IndexSpec *sp, Document *b, QueryError *stat
 }
 
 static void doReplyFinish(RSAddDocumentCtx *aCtx, RedisModuleCtx *ctx) {
-  aCtx->donecb(aCtx, ctx, NULL);
+  if(aCtx->donecb){
+    aCtx->donecb(aCtx, ctx, NULL);
+  }
   AddDocumentCtx_Free(aCtx);
 }
 
@@ -441,7 +443,7 @@ FIELD_PREPROCESSOR(tagPreprocessor) {
 
 FIELD_BULK_CTOR(tagCtor) {
   RedisModuleString *kname = IndexSpec_GetFormattedKey(ctx->spec, fs);
-  bulk->indexData = TagIndex_Open(ctx->redisCtx, kname, 1, &bulk->indexKey);
+  bulk->indexData = TagIndex_Open(ctx, kname, 1, &bulk->indexKey);
 }
 
 FIELD_BULK_INDEXER(tagIndexer) {

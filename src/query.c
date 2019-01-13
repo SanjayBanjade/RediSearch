@@ -21,6 +21,7 @@
 #include "numeric_index.h"
 #include "numeric_filter.h"
 #include "util/strconv.h"
+#include "redisearch_api.h"
 
 #define EFFECTIVE_FIELDMASK(q_, qn_) ((qn_)->opts.fieldMask & (q)->opts->fieldmask)
 
@@ -637,7 +638,7 @@ static IndexIterator *Query_EvalTagNode(QueryEvalCtx *q, QueryNode *qn) {
     return NULL;
   }
   RedisModuleString *kstr = IndexSpec_GetFormattedKey(q->sctx->spec, fs);
-  TagIndex *idx = TagIndex_Open(q->sctx->redisCtx, kstr, 0, &k);
+  TagIndex *idx = TagIndex_Open(q->sctx, kstr, 0, &k);
   IndexIterator **total_its = NULL;
 
   if (!idx) {
@@ -1153,4 +1154,89 @@ int QueryNode_ApplyAttributes(QueryNode *qn, QueryAttribute *attrs, size_t len,
     }
   }
   return 1;
+}
+
+QueryNode* RS_CreateUnionNode(IndexSpec* spec, const char* fieldName){
+  QueryNode *qn = NewQueryNode(QN_UNION);
+  if(fieldName){
+    // todo: set fields mask somehow
+  }
+  return qn;
+}
+
+void RS_UnionNodeAddChild(QueryNode* unionNode, QueryNode* child){
+  QueryUnionNode_AddChild(unionNode, child);
+}
+
+QueryNode* RS_CreateNumericNode(IndexSpec* spec, const char* fieldName, double min, double max, int inclusiveMin, int inclusiveMax){
+  QueryNode *qn = NewQueryNode(QN_NUMERIC);
+  if(fieldName){
+    // todo: set fields mask somehow
+  }
+  qn->nn.nf->fieldName = strdup(fieldName);
+  qn->nn.nf->max = max;
+  qn->nn.nf->min = min;
+  qn->nn.nf->inclusiveMax = inclusiveMax;
+  qn->nn.nf->inclusiveMin = inclusiveMin;
+  return qn;
+}
+
+QueryNode* RS_CreateTokenNode(IndexSpec* spec, const char* fieldName, const char* token, int flag){
+  QueryNode *qn = NULL;
+  if(flag ==  EXECT_SEARCH){
+    qn = NewQueryNode(QN_TOKEN);
+    qn->tn.str = strdup(token);
+    qn->tn.len = strlen(token);
+  }else if(flag ==  PREFIX_SEARCH){
+    qn = NewQueryNode(QN_PREFX);
+    qn->pfx.str = strdup(token);
+    qn->pfx.len = strlen(token);
+  }else{
+    assert(false);
+  }
+  if(fieldName){
+    // todo: set fields mask somehow
+  }
+  return qn;
+}
+
+QueryNode* RS_CreateTagNode(IndexSpec* spec, const char* fieldName, const char* tag, int flag){
+  QueryNode *qn = NewQueryNode(QN_TAG);
+  qn->tag.fieldName = strdup(fieldName);
+  qn->tag.len = strlen(fieldName);
+  if(fieldName){
+    // todo: set fields mask somehow
+  }
+
+  QueryNode* child = RS_CreateTokenNode(spec, NULL, tag, flag);
+  QueryTagNode_AddChildren(qn, &child, 1);
+  return qn;
+}
+
+ResultsIterator* RS_GetResultsIterator(IndexSpec* spec, QueryNode* qn){
+  QueryAST ast = {
+      .root = qn,
+  };
+  RSSearchOptions opts = {
+      .stopwords = spec->stopwords,
+  };
+  RedisSearchCtx sctx = {.redisCtx = NULL, .spec = spec};
+  QueryError status = {0};
+  return QAST_Iterate(&ast, &opts, &sctx, NULL, &status);
+}
+
+const char* RS_ResultsIteratorNext(IndexSpec* spec, ResultsIterator* iter){
+  RSIndexResult *e;
+  while(iter->Read(iter->ctx, &e) != INDEXREAD_EOF){
+    RSDocumentMetadata *doc = DocTable_Get(&spec->docs, e->docId);
+    if(doc){
+      return doc->keyPtr;
+    }
+  }
+  return NULL;
+
+}
+
+void RS_ResultsIteratorFree(ResultsIterator* iter){
+  iter->Free(iter);
 }

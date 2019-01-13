@@ -8,6 +8,7 @@
 #include "util/misc.h"
 #include "tag_index.h"
 #include "rmalloc.h"
+#include "spec.h"
 #include <stdio.h>
 
 RedisModuleType *InvertedIndexType;
@@ -286,34 +287,48 @@ const char *Redis_SelectRandomTerm(RedisSearchCtx *ctx, size_t *tlen) {
 InvertedIndex *Redis_OpenInvertedIndexEx(RedisSearchCtx *ctx, const char *term, size_t len,
                                          int write, RedisModuleKey **keyp) {
   RedisModuleString *termKey = fmtRedisTermKey(ctx, term, len);
-  RedisModuleKey *k = RedisModule_OpenKey(ctx->redisCtx, termKey,
-                                          REDISMODULE_READ | (write ? REDISMODULE_WRITE : 0));
+  if(!ctx->spec->invertedIndexes){
+    RedisModuleKey *k = RedisModule_OpenKey(ctx->redisCtx, termKey,
+                                            REDISMODULE_READ | (write ? REDISMODULE_WRITE : 0));
 
-  RedisModule_FreeString(ctx->redisCtx, termKey);
-  InvertedIndex *idx = NULL;
+    RedisModule_FreeString(ctx->redisCtx, termKey);
+    InvertedIndex *idx = NULL;
 
-  // check that the key is empty
-  if (k == NULL) {
-    return NULL;
-  }
-
-  int kType = RedisModule_KeyType(k);
-
-  if (kType == REDISMODULE_KEYTYPE_EMPTY) {
-    if (write) {
-      idx = NewInvertedIndex(ctx->spec->flags, 1);
-      RedisModule_ModuleTypeSetValue(k, InvertedIndexType, idx);
+    // check that the key is empty
+    if (k == NULL) {
+      return NULL;
     }
-  } else if (kType == REDISMODULE_KEYTYPE_MODULE &&
-             RedisModule_ModuleTypeGetType(k) == InvertedIndexType) {
-    idx = RedisModule_ModuleTypeGetValue(k);
-  }
-  if (idx == NULL) {
-    RedisModule_CloseKey(k);
-    return NULL;
-  } else {
-    if (keyp) {
-      *keyp = k;
+
+    int kType = RedisModule_KeyType(k);
+
+    if (kType == REDISMODULE_KEYTYPE_EMPTY) {
+      if (write) {
+        idx = NewInvertedIndex(ctx->spec->flags, 1);
+        RedisModule_ModuleTypeSetValue(k, InvertedIndexType, idx);
+      }
+    } else if (kType == REDISMODULE_KEYTYPE_MODULE &&
+               RedisModule_ModuleTypeGetType(k) == InvertedIndexType) {
+      idx = RedisModule_ModuleTypeGetValue(k);
+    }
+    if (idx == NULL) {
+      RedisModule_CloseKey(k);
+      return NULL;
+    } else {
+      if (keyp) {
+        *keyp = k;
+      }
+      return idx;
+    }
+  }else{
+    const char* termKeyStr = RedisModule_StringPtrLen(termKey, NULL);
+    InvertedIndex *idx = dictFetchValue(ctx->spec->invertedIndexes, termKeyStr);
+    if(!idx){
+      if (write) {
+        idx = NewInvertedIndex(ctx->spec->flags, 1);
+        dictAdd(ctx->spec->invertedIndexes, (char*)termKeyStr, idx);
+      }else{
+        return NULL;
+      }
     }
     return idx;
   }
@@ -322,18 +337,26 @@ InvertedIndex *Redis_OpenInvertedIndexEx(RedisSearchCtx *ctx, const char *term, 
 IndexReader *Redis_OpenReader(RedisSearchCtx *ctx, RSQueryTerm *term, DocTable *dt,
                               int singleWordMode, t_fieldMask fieldMask, ConcurrentSearchCtx *csx,
                               double weight) {
+  InvertedIndex *idx = NULL;
+  RedisModuleKey *k = NULL;
+  RedisModuleString *termKey = fmtRedisTermKey(ctx, term->str, term->len);;
+  if(!ctx->spec->invertedIndexes){
+    k = RedisModule_OpenKey(ctx->redisCtx, termKey, REDISMODULE_READ);
 
-  RedisModuleString *termKey = fmtRedisTermKey(ctx, term->str, term->len);
-  RedisModuleKey *k = RedisModule_OpenKey(ctx->redisCtx, termKey, REDISMODULE_READ);
-
-  // we do not allow empty indexes when loading an existing index
-  if (k == NULL || RedisModule_KeyType(k) == REDISMODULE_KEYTYPE_EMPTY ||
-      RedisModule_ModuleTypeGetType(k) != InvertedIndexType) {
-    RedisModule_FreeString(ctx->redisCtx, termKey);
-    return NULL;
+    // we do not allow empty indexes when loading an existing index
+    if (k == NULL || RedisModule_KeyType(k) == REDISMODULE_KEYTYPE_EMPTY ||
+        RedisModule_ModuleTypeGetType(k) != InvertedIndexType) {
+      RedisModule_FreeString(ctx->redisCtx, termKey);
+      return NULL;
+    }
+    idx = RedisModule_ModuleTypeGetValue(k);
+  }else{
+    const char* termKeyStr = RedisModule_StringPtrLen(termKey, NULL);
+    idx = dictFetchValue(ctx->spec->invertedIndexes, termKeyStr);
+    if(!idx){
+      return NULL;
+    }
   }
-
-  InvertedIndex *idx = RedisModule_ModuleTypeGetValue(k);
 
   IndexReader *ret = NewTermIndexReader(idx, dt, fieldMask, term, weight);
   if (csx) {
