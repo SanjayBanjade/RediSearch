@@ -18,6 +18,11 @@ static inline int isEof(const IdListIterator *it) {
   return !it->base.isValid;
 }
 
+long long IL_EstimateResultsAmount(void *ctx) {
+  IdListIterator *it = ctx;
+  return it->size;
+}
+
 /* Read the next entry from the iterator, into hit *e.
  *  Returns INDEXREAD_EOF if at the end */
 int IL_Read(void *ctx, RSIndexResult **r) {
@@ -142,9 +147,11 @@ IndexIterator *NewIdListIterator(t_docId *ids, t_offset num, double weight) {
   ret->LastDocId = IL_LastDocId;
   ret->Len = IL_Len;
   ret->Read = IL_Read;
+  ret->EstimateResultsAmount = IL_EstimateResultsAmount;
   ret->SkipTo = IL_SkipTo;
   ret->Abort = IL_Abort;
   ret->Rewind = IL_Rewind;
+  ret->mode = SORTED;
 
   ret->HasNext = NULL;
   ret->GetCurrent = NULL;

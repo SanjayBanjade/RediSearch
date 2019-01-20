@@ -4,10 +4,15 @@
 #include <stdint.h>
 #include "redisearch.h"
 #include "index_result.h"
+#include "spec.h"
 
 #define INDEXREAD_EOF 0
 #define INDEXREAD_OK 1
 #define INDEXREAD_NOTFOUND 2
+
+typedef enum IteratorMode{
+  SORTED, UNSORTED
+}IteratorMode;
 
 /* An abstract interface used by readers / intersectors / unioners etc.
 Basically query execution creates a tree of iterators that activate each other
@@ -23,6 +28,10 @@ typedef struct indexIterator {
 
   // Cached value - used if Current() is not set
   RSIndexResult *current;
+
+  IndexSpec* spec;
+
+  IteratorMode mode;
 
   RSIndexResult *(*GetCurrent)(void *ctx);
 
@@ -53,6 +62,11 @@ typedef struct indexIterator {
 
   /* Rewinde the iterator to the beginning and reset its state */
   void (*Rewind)(void *ctx);
+
+  /* Return true iff the given docId match the filter */
+  int (*IsMatch)(struct indexIterator* iter, t_docId id);
+
+  long long (*EstimateResultsAmount)(void *ctx);
 } IndexIterator;
 
 // static inline int IITER_HAS_NEXT(IndexIterator *ii) {

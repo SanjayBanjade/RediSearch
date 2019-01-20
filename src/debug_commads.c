@@ -28,16 +28,16 @@
   RedisModule_ReplyWithStringBuffer(ctx, val, strlen(val));   \
   bulkLen += 2;
 
-static void ReplyReaderResults(IndexReader *reader, RedisModuleCtx *ctx) {
-  IndexIterator *iter = NewReadIterator(reader);
+static void ReplyReaderResults(IndexReader *reader, RedisSearchCtx *sctx) {
+  IndexIterator *iter = NewReadIterator(sctx->spec, reader);
   RSIndexResult *r;
   size_t resultSize = 0;
-  RedisModule_ReplyWithArray(ctx, REDISMODULE_POSTPONED_ARRAY_LEN);
+  RedisModule_ReplyWithArray(sctx->redisCtx, REDISMODULE_POSTPONED_ARRAY_LEN);
   while (iter->Read(iter->ctx, &r) != INDEXREAD_EOF) {
-    RedisModule_ReplyWithLongLong(ctx, r->docId);
+    RedisModule_ReplyWithLongLong(sctx->redisCtx, r->docId);
     ++resultSize;
   }
-  RedisModule_ReplySetArrayLength(ctx, resultSize);
+  RedisModule_ReplySetArrayLength(sctx->redisCtx, resultSize);
   ReadIterator_Free(iter);
 }
 
@@ -139,7 +139,7 @@ DEBUG_COMMAND(DumpInvertedIndex) {
     goto end;
   }
   IndexReader *reader = NewTermIndexReader(invidx, NULL, RS_FIELDMASK_ALL, NULL, 1);
-  ReplyReaderResults(reader, sctx->redisCtx);
+  ReplyReaderResults(reader, sctx);
 end:
   if (keyp) {
     RedisModule_CloseKey(keyp);
@@ -206,7 +206,7 @@ DEBUG_COMMAND(DumpNumericIndex) {
   while ((currNode = NumericRangeTreeIterator_Next(iter))) {
     if (currNode->range) {
       IndexReader *reader = NewNumericReader(currNode->range->entries, NULL);
-      ReplyReaderResults(reader, sctx->redisCtx);
+      ReplyReaderResults(reader, sctx);
       ++resultSize;
     }
   }
@@ -249,7 +249,7 @@ DEBUG_COMMAND(DumpTagIndex) {
     RedisModule_ReplyWithArray(sctx->redisCtx, 2);
     RedisModule_ReplyWithStringBuffer(sctx->redisCtx, tag, len);
     IndexReader *reader = NewTermIndexReader(iv, NULL, RS_FIELDMASK_ALL, NULL, 1);
-    ReplyReaderResults(reader, sctx->redisCtx);
+    ReplyReaderResults(reader, sctx);
     ++resultSize;
   }
   RedisModule_ReplySetArrayLength(sctx->redisCtx, resultSize);
@@ -455,7 +455,7 @@ DEBUG_COMMAND(InfoTagIndex) {
     if (options.dumpIdEntries) {
       RedisModule_ReplyWithSimpleString(ctx, "entries");
       IndexReader *reader = NewTermIndexReader(iv, NULL, RS_FIELDMASK_ALL, NULL, 1);
-      ReplyReaderResults(reader, sctx->redisCtx);
+      ReplyReaderResults(reader, sctx);
       nsubelem += 2;
     }
 

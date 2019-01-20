@@ -837,7 +837,7 @@ def testExact(env):
     env.assertEqual("doc1", res[1])
 
     res = r.execute_command(
-        'ft.search', 'idx', "hello \"another world\"", 'verbatim')
+        'ft.search', 'idx', "hello another world", 'verbatim')
     env.assertEqual(3, len(res))
     env.assertEqual(1, res[0])
     env.assertEqual("doc2", res[1])

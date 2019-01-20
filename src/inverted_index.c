@@ -683,6 +683,18 @@ IndexReader *NewNumericReader(InvertedIndex *idx, const NumericFilter *flt) {
   return NewIndexReaderGeneric(idx, readNumeric, ctx, res, 1);
 }
 
+long long IR_EstimateResultsAmount(void *ctx){
+  IndexReader *ir = ctx;
+  return ir->idx->numDocs;
+}
+
+int IR_IsMatch(IndexIterator* iter, t_docId id) {
+  RSDocumentMetadata *dmd = DocTable_Get(&iter->spec->docs, id);
+  IndexReader *ir = iter->ctx;
+  // todo : check that the data actually pass the filter!!!
+  return 1;
+}
+
 int IR_Read(void *ctx, RSIndexResult **e) {
 
   IndexReader *ir = ctx;
@@ -909,10 +921,13 @@ typedef struct {
   IndexReader ir;
 } IRIndexIterator;
 
-IndexIterator *NewReadIterator(IndexReader *ir) {
+IndexIterator *NewReadIterator(IndexSpec* spec, IndexReader *ir) {
   IndexIterator *ri = rm_malloc(sizeof(IndexIterator));
   ri->ctx = ir;
+  ri->spec = spec;
   ri->Read = IR_Read;
+  ri->IsMatch = IR_IsMatch;
+  ri->EstimateResultsAmount = IR_EstimateResultsAmount;
   ri->SkipTo = IR_SkipTo;
   ri->LastDocId = IR_LastDocId;
   ri->Free = ReadIterator_Free;
@@ -922,6 +937,8 @@ IndexIterator *NewReadIterator(IndexReader *ir) {
   ri->HasNext = NULL;
   ri->isValid = !ir->atEnd_;
   ri->current = ir->record;
+
+  ri->mode = SORTED;
 
   ir->isValidP = &ri->isValid;
   return ri;

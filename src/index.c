@@ -18,6 +18,8 @@ static size_t UI_Len(void *ctx);
 static int II_SkipTo(void *ctx, t_docId docId, RSIndexResult **hit);
 static int II_Next(void *ctx);
 static int II_Read(void *ctx, RSIndexResult **hit);
+static int II_IsMatch(IndexIterator* iter, t_docId id);
+static long long II_EstimateResultsAmount(void* ctx);
 static size_t II_Len(void *ctx);
 static t_docId II_LastDocId(void *ctx);
 
@@ -35,6 +37,8 @@ typedef struct {
   IndexIterator **its;
   IndexIterator **origits;
   uint32_t num;
+  uint32_t cur;
+  long long estimateResultsAmount;
   uint32_t norig;
   t_docId minDocId;
 
@@ -42,9 +46,21 @@ typedef struct {
   int quickExit;
   double weight;
   uint64_t len;
-  RedisModuleDict *dict;
-  RedisModuleDictIter* iter;
 } UnionIterator;
+
+static inline long long UI_EstimateResultsAmount(void *ctx) {
+  return ((UnionIterator *)ctx)->estimateResultsAmount;
+}
+
+static inline int UI_IsMatch(IndexIterator* iter, t_docId id) {
+  UnionIterator *ui = (UnionIterator *)iter;
+  for(int i = 0 ; i < ui->norig ; ++i){
+    if(ui->origits[i]->IsMatch(ui->origits[i], id)){
+      return 1;
+    }
+  }
+  return 0;
+}
 
 static inline t_docId UI_LastDocId(void *ctx) {
   return ((UnionIterator *)ctx)->minDocId;
@@ -107,19 +123,21 @@ IndexIterator *NewUnionIterator(IndexIterator **its, int num, DocTable *dt, int 
   ctx->origits = its;
   ctx->weight = weight;
   ctx->num = num;
+  ctx->cur = 0;
   ctx->norig = num;
+  ctx->estimateResultsAmount = 0;
   IITER_CLEAR_EOF(&ctx->base);
   CURRENT_RECORD(ctx) = NewUnionResult(num, weight);
   ctx->len = 0;
   ctx->quickExit = quickExit;
   ctx->its = calloc(ctx->num, sizeof(*ctx->its));
-  ctx->dict = NULL;
-  ctx->iter = NULL;
 
   // bind the union iterator calls
   IndexIterator *it = &ctx->base;
   it->ctx = ctx;
   it->LastDocId = UI_LastDocId;
+  it->IsMatch = UI_IsMatch;
+  it->EstimateResultsAmount = UI_EstimateResultsAmount;
   it->Read = UI_Read;
   it->SkipTo = UI_SkipTo;
   it->HasNext = NULL;
@@ -129,101 +147,101 @@ IndexIterator *NewUnionIterator(IndexIterator **its, int num, DocTable *dt, int 
   it->Rewind = UI_Rewind;
   UI_SyncIterList(ctx);
 
+  it->mode = SORTED;
+  for(int i = 0 ; i < num ; ++i){
+    ctx->estimateResultsAmount += its[i]->EstimateResultsAmount(its[i]->ctx);
+    if(its[i]->mode == UNSORTED){
+      it->mode = UNSORTED;
+      break;
+    }
+  }
+
+#define MAX_UNION_SORTED_MODE 1000000
+  if(num * ctx->estimateResultsAmount > MAX_UNION_SORTED_MODE){
+    it->mode = UNSORTED;
+  }
+
   return it;
 }
 
 static inline int UI_Read(void *ctx, RSIndexResult **hit) {
   UnionIterator *ui = ctx;
-  unsigned nits = ui->num;
-  if(!ui->dict){
-    RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(NULL);
-    ui->dict = RedisModule_CreateDict(ctx);
-    for (unsigned i = 0; i < nits; i++) {
-      IndexIterator *it = ui->its[i];
-      RSIndexResult *res;
-      int rc = it->Read(it->ctx, &res);
-      // read while we're not at the end and perhaps the flags do not match
-      while (rc != INDEXREAD_EOF) {
-        RSIndexResult *accumulatedRes = RedisModule_DictGetC(ui->dict, &(res->docId), sizeof(t_docId), NULL);
-        if(!accumulatedRes){
-          accumulatedRes = NewUnionResult(ui->num, ui->weight);
-          RedisModule_DictSetC(ui->dict, &(res->docId), sizeof(t_docId), accumulatedRes);
-        }
-        AggregateResult_AddChild(accumulatedRes, res);
-        rc = it->Read(it->ctx, &res);
-      }
-    }
-
-    ui->iter = RedisModule_DictIteratorStartC(ui->dict, "^", NULL, 0);
-  }
-  RSIndexResult *accumulatedRes;
-  t_docId* docid = RedisModule_DictNextC(ui->iter, NULL, (void**)&accumulatedRes);
-  if(!docid){
+  if (ui->num == 0 || !IITER_HAS_NEXT(&ui->base)) {
+    IITER_SET_EOF(&ui->base);
     return INDEXREAD_EOF;
   }
-  *hit = accumulatedRes;
-  return INDEXREAD_OK;
-  // nothing to do
-//  if (ui->num == 0 || !IITER_HAS_NEXT(&ui->base)) {
-//    IITER_SET_EOF(&ui->base);
-//    return INDEXREAD_EOF;
-//  }
-//
-//  int numActive = 0;
-//  AggregateResult_Reset(CURRENT_RECORD(ui));
-//
-//  do {
-//
-//    // find the minimal iterator
-//    t_docId minDocId = UINT32_MAX;
-//    IndexIterator *minIt = NULL;
-//    numActive = 0;
-//    int rc = INDEXREAD_EOF;
-//    unsigned nits = ui->num;
-//
-//    for (unsigned i = 0; i < nits; i++) {
-//      IndexIterator *it = ui->its[i];
-//      RSIndexResult *res = IITER_CURRENT_RECORD(it);
-//      rc = INDEXREAD_OK;
-//      // if this hit is behind the min id - read the next entry
-//      // printf("ui->docIds[%d]: %d, ui->minDocId: %d\n", i, ui->docIds[i], ui->minDocId);
-//      while (it->minId <= ui->minDocId && rc != INDEXREAD_EOF) {
-//        rc = INDEXREAD_NOTFOUND;
-//        // read while we're not at the end and perhaps the flags do not match
-//        while (rc == INDEXREAD_NOTFOUND) {
-//          rc = it->Read(it->ctx, &res);
-//          it->minId = res->docId;
-//        }
-//      }
-//
-//      if (rc != INDEXREAD_EOF) {
-//        numActive++;
-//      } else {
-//        // Remove this from the active list
-//        i = UI_RemoveExhausted(ui, i);
-//        nits = ui->num;
-//        continue;
-//      }
-//
-//      if (rc == INDEXREAD_OK && res->docId <= minDocId) {
-//        minDocId = res->docId;
-//        minIt = it;
-//      }
-//    }
-//
-//    // take the minimum entry and collect all results matching to it
-//    if (minIt) {
-//      UI_SkipTo(ui, minIt->minId, hit);
-//      // return INDEXREAD_OK;
-//      ui->minDocId = minIt->minId;
-//      ui->len++;
-//      return INDEXREAD_OK;
-//    }
-//
-//  } while (numActive > 0);
-//  IITER_SET_EOF(&ui->base);
-//
-//  return INDEXREAD_EOF;
+  if(ui->base.mode == SORTED){
+
+    int numActive = 0;
+    AggregateResult_Reset(CURRENT_RECORD(ui));
+
+    do {
+
+      // find the minimal iterator
+      t_docId minDocId = UINT32_MAX;
+      IndexIterator *minIt = NULL;
+      numActive = 0;
+      int rc = INDEXREAD_EOF;
+      unsigned nits = ui->num;
+
+      for (unsigned i = 0; i < nits; i++) {
+        IndexIterator *it = ui->its[i];
+        RSIndexResult *res = IITER_CURRENT_RECORD(it);
+        rc = INDEXREAD_OK;
+        // if this hit is behind the min id - read the next entry
+        // printf("ui->docIds[%d]: %d, ui->minDocId: %d\n", i, ui->docIds[i], ui->minDocId);
+        while (it->minId <= ui->minDocId && rc != INDEXREAD_EOF) {
+          rc = INDEXREAD_NOTFOUND;
+          // read while we're not at the end and perhaps the flags do not match
+          while (rc == INDEXREAD_NOTFOUND) {
+            rc = it->Read(it->ctx, &res);
+            it->minId = res->docId;
+          }
+        }
+
+        if (rc != INDEXREAD_EOF) {
+          numActive++;
+        } else {
+          // Remove this from the active list
+          i = UI_RemoveExhausted(ui, i);
+          nits = ui->num;
+          continue;
+        }
+
+        if (rc == INDEXREAD_OK && res->docId <= minDocId) {
+          minDocId = res->docId;
+          minIt = it;
+        }
+      }
+
+      // take the minimum entry and collect all results matching to it
+      if (minIt) {
+        UI_SkipTo(ui, minIt->minId, hit);
+        // return INDEXREAD_OK;
+        ui->minDocId = minIt->minId;
+        ui->len++;
+        return INDEXREAD_OK;
+      }
+
+    } while (numActive > 0);
+    IITER_SET_EOF(&ui->base);
+
+    return INDEXREAD_EOF;
+  }else{
+    while(true){
+      IndexIterator *it = ui->its[ui->cur];
+      int rc = it->Read(it->ctx, hit);
+      if (rc == INDEXREAD_EOF){
+        ++ui->cur;
+        --ui->num;
+      }else{
+        return INDEXREAD_OK;
+      }
+      if(!ui->num){
+        return INDEXREAD_EOF;
+      }
+    }
+  }
 }
 
 static int UI_Next(void *ctx) {
@@ -242,6 +260,8 @@ at EOF
 */
 static int UI_SkipTo(void *ctx, t_docId docId, RSIndexResult **hit) {
   UnionIterator *ui = ctx;
+
+  assert(ui->base.mode == SORTED);
 
   // printf("UI %p skipto %d\n", ui, docId);
 
@@ -359,10 +379,13 @@ static size_t UI_Len(void *ctx) {
 typedef struct {
   IndexIterator base;
   IndexIterator **its;
+  IndexIterator **sortedIts;
+  IndexIterator **unsortedIts;
   t_docId *docIds;
   int *rcs;
   int num;
   size_t len;
+  long long estimatedResutlsAmount;
   int maxSlop;
   int inOrder;
   // the last read docId from any child
@@ -385,6 +408,8 @@ void IntersectIterator_Free(IndexIterator *it) {
     }
     // IndexResult_Free(&ui->currentHits[i]);
   }
+  array_free(ui->sortedIts);
+  array_free(ui->unsortedIts);
   free(ui->docIds);
   IndexResult_Free(it->current);
   free(ui->its);
@@ -420,10 +445,13 @@ IndexIterator *NewIntersecIterator(IndexIterator **its, int num, DocTable *dt,
   // printf("Creating new intersection iterator with fieldMask=%llx\n", fieldMask);
   IntersectIterator *ctx = calloc(1, sizeof(*ctx));
   ctx->its = its;
+  ctx->sortedIts = array_new(IndexIterator*, num);
+  ctx->unsortedIts = array_new(IndexIterator*, num);
   ctx->num = num;
   ctx->lastDocId = 0;
   ctx->lastFoundId = 0;
   ctx->len = 0;
+  ctx->estimatedResutlsAmount = 0;
   ctx->maxSlop = maxSlop;
   ctx->inOrder = inOrder;
   ctx->fieldMask = fieldMask;
@@ -439,6 +467,8 @@ IndexIterator *NewIntersecIterator(IndexIterator **its, int num, DocTable *dt,
   it->ctx = ctx;
   it->LastDocId = II_LastDocId;
   it->Read = II_Read;
+  it->IsMatch = II_IsMatch;
+  it->EstimateResultsAmount = II_EstimateResultsAmount;
   it->SkipTo = II_SkipTo;
   it->Len = II_Len;
   it->Free = IntersectIterator_Free;
@@ -446,6 +476,27 @@ IndexIterator *NewIntersecIterator(IndexIterator **its, int num, DocTable *dt,
   it->Rewind = II_Rewind;
   it->GetCurrent = NULL;
   it->HasNext = NULL;
+  it->mode = SORTED;
+
+  for(int i = 0 ; i < num ; ++i){
+    if(its[i]){
+      if(its[i]->EstimateResultsAmount(its[i]->ctx) < ctx->estimatedResutlsAmount){
+        ctx->estimatedResutlsAmount = its[i]->EstimateResultsAmount(its[i]->ctx);
+      }
+      if(its[i]->mode == UNSORTED){
+        ctx->unsortedIts = array_append(ctx->unsortedIts, its[i]);
+      }else{
+        ctx->sortedIts = array_append(ctx->sortedIts, its[i]);
+      }
+    }else{
+      ctx->sortedIts = array_append(ctx->sortedIts, NULL);
+    }
+  }
+
+  if(!array_len(ctx->sortedIts) && array_len(ctx->unsortedIts)){
+    ctx->base.mode = UNSORTED;
+  }
+
   return it;
 }
 
@@ -518,89 +569,172 @@ static int II_Next(void *ctx) {
   return II_Read(ctx, NULL);
 }
 
+static long long II_EstimateResultsAmount(void* ctx) {
+  IntersectIterator *ic = ctx;
+  return ic->estimatedResutlsAmount;
+}
+
+static int II_IsMatch(IndexIterator* iter, t_docId id) {
+  IntersectIterator *ii = (IntersectIterator *)iter;
+  for(int i = 0 ; i < ii->num ; ++i){
+    if(!ii->its[i]->IsMatch(ii->its[i], id)){
+      return 0;
+    }
+  }
+  return 1;
+}
+
 static int II_Read(void *ctx, RSIndexResult **hit) {
   IntersectIterator *ic = ctx;
 
-  if (ic->num == 0) return INDEXREAD_EOF;
-  AggregateResult_Reset(ic->base.current);
+  if (ic->num == 0 || !ic->its[0]) return INDEXREAD_EOF;
 
-  int nh = 0;
-  int i = 0;
-
-  do {
-
-    nh = 0;
+  RSIndexResult *h;
+  size_t currIndex = 0;
+  IndexIterator *currIt = ic->sortedIts[currIndex];
+  int rc = currIt->Read(currIt->ctx, &h);
+  while(1){
     AggregateResult_Reset(ic->base.current);
-
-    for (i = 0; i < ic->num; i++) {
-      IndexIterator *it = ic->its[i];
-
-      if (!it) goto eof;
-
-      RSIndexResult *h = IITER_CURRENT_RECORD(it);
-      // skip to the next
-      int rc = INDEXREAD_OK;
-      if (ic->docIds[i] != ic->lastDocId || ic->lastDocId == 0) {
-
-        if (i == 0 && ic->docIds[i] >= ic->lastDocId) {
-          rc = it->Read(it->ctx, &h);
-        } else {
-          rc = it->SkipTo(it->ctx, ic->lastDocId, &h);
-        }
-        // printf("II %p last docId %d, it %d read docId %d(%d), rc %d\n", ic, ic->lastDocId, i,
-        //        h->docId, it->LastDocId(it->ctx), rc);
-
-        if (rc == INDEXREAD_EOF) goto eof;
-        ic->docIds[i] = h->docId;
+    if(rc == INDEXREAD_EOF){
+      ic->base.isValid = 0;
+      return INDEXREAD_EOF;
+    }
+    AggregateResult_AddChild(ic->base.current, h);
+    bool isFoundInAllIterators = true;
+    for(IndexIterator *it = ic->sortedIts[(++currIndex) % array_len(ic->sortedIts)];
+        it != currIt ;
+        it = ic->sortedIts[(++currIndex) % array_len(ic->sortedIts)]){
+      if(!it){
+        ic->base.isValid = 0;
+        return INDEXREAD_EOF;
       }
-
-      if (ic->docIds[i] > ic->lastDocId) {
-        ic->lastDocId = ic->docIds[i];
+      rc = it->SkipTo(it->ctx, h->docId, &h);
+      if(rc == INDEXREAD_EOF){
+        ic->base.isValid = 0;
+        return INDEXREAD_EOF;
+      }
+      if(rc == INDEXREAD_NOTFOUND){
+        currIt = it;
+        isFoundInAllIterators = false;
         break;
       }
-      if (rc == INDEXREAD_OK) {
-        ++nh;
-        AggregateResult_AddChild(ic->base.current, h);
-      } else {
-        ic->lastDocId++;
-      }
+      AggregateResult_AddChild(ic->base.current, h);
     }
 
-    if (nh == ic->num) {
-      // printf("II %p HIT @ %d\n", ic, ic->current->docId);
-      // sum up all hits
-      if (hit != NULL) {
-        *hit = ic->base.current;
-      }
-      // Update the last valid found id
-      ic->lastFoundId = ic->base.current->docId;
+    if(!isFoundInAllIterators){
+      continue;
+    }
 
-      // advance the doc id so next time we'll read a new record
-      ic->lastDocId++;
+    // we found a result!!!
 
-      // // make sure the flags are matching.
-      if ((ic->base.current->fieldMask & ic->fieldMask) == 0) {
-        // printf("Field masks don't match!\n");
+    // iterate over the none sortable iterators and make sure it match all of them
+    for(int i = 0 ; i < array_len(ic->unsortedIts) ; ++i){
+      if(!ic->unsortedIts[i]->IsMatch(ic->unsortedIts[i], ic->base.current->docId)){
+        rc = currIt->Read(currIt->ctx, &h);
         continue;
       }
-
-      // If we need to match slop and order, we do it now, and possibly skip the result
-      if (ic->maxSlop >= 0) {
-        // printf("Checking SLOP... (%d)\n", ic->maxSlop);
-        if (!IndexResult_IsWithinRange(ic->base.current, ic->maxSlop, ic->inOrder)) {
-          // printf("Not within range!\n");
-          continue;
-        }
-      }
-
-      ic->len++;
-      // printf("Returning OK\n");
-      return INDEXREAD_OK;
     }
-  } while (1);
-eof:
-  ic->base.isValid = 0;
-  return INDEXREAD_EOF;
+
+    // // make sure the flags are matching.
+    if ((ic->base.current->fieldMask & ic->fieldMask) == 0) {
+      // printf("Field masks don't match!\n");
+      rc = currIt->Read(currIt->ctx, &h);
+      continue;
+    }
+
+    // If we need to match slop and order, we do it now, and possibly skip the result
+    if (ic->maxSlop >= 0) {
+      // printf("Checking SLOP... (%d)\n", ic->maxSlop);
+      if (!IndexResult_IsWithinRange(ic->base.current, ic->maxSlop, ic->inOrder)) {
+        // printf("Not within range!\n");
+        rc = currIt->Read(currIt->ctx, &h);
+        continue;
+      }
+    }
+
+    ic->len++;
+    *hit = ic->base.current;
+    return INDEXREAD_OK;
+  }
+
+
+//  int nh = 0;
+//  int i = 0;
+//
+//  do {
+//
+//    nh = 0;
+//    AggregateResult_Reset(ic->base.current);
+//
+//    for (i = 0; i < ic->num; i++) {
+//      IndexIterator *it = ic->its[i];
+//
+//      if (!it) goto eof;
+//
+//      RSIndexResult *h = IITER_CURRENT_RECORD(it);
+//      // skip to the next
+//      int rc = INDEXREAD_OK;
+//      if (ic->docIds[i] != ic->lastDocId || ic->lastDocId == 0) {
+//
+//        if (i == 0 && ic->docIds[i] >= ic->lastDocId) {
+//          rc = it->Read(it->ctx, &h);
+//        } else {
+//          rc = it->SkipTo(it->ctx, ic->lastDocId, &h);
+//        }
+//        // printf("II %p last docId %d, it %d read docId %d(%d), rc %d\n", ic, ic->lastDocId, i,
+//        //        h->docId, it->LastDocId(it->ctx), rc);
+//
+//        if (rc == INDEXREAD_EOF) goto eof;
+//        ic->docIds[i] = h->docId;
+//      }
+//
+//      if (ic->docIds[i] > ic->lastDocId) {
+//        ic->lastDocId = ic->docIds[i];
+//        break;
+//      }
+//      if (rc == INDEXREAD_OK) {
+//        ++nh;
+//        AggregateResult_AddChild(ic->base.current, h);
+//      } else {
+//        ic->lastDocId++;
+//      }
+//    }
+//
+//    if (nh == ic->num) {
+//      // printf("II %p HIT @ %d\n", ic, ic->current->docId);
+//      // sum up all hits
+//      if (hit != NULL) {
+//        *hit = ic->base.current;
+//      }
+//      // Update the last valid found id
+//      ic->lastFoundId = ic->base.current->docId;
+//
+//      // advance the doc id so next time we'll read a new record
+//      ic->lastDocId++;
+//
+//      // // make sure the flags are matching.
+//      if ((ic->base.current->fieldMask & ic->fieldMask) == 0) {
+//        // printf("Field masks don't match!\n");
+//        continue;
+//      }
+//
+//      // If we need to match slop and order, we do it now, and possibly skip the result
+//      if (ic->maxSlop >= 0) {
+//        // printf("Checking SLOP... (%d)\n", ic->maxSlop);
+//        if (!IndexResult_IsWithinRange(ic->base.current, ic->maxSlop, ic->inOrder)) {
+//          // printf("Not within range!\n");
+//          continue;
+//        }
+//      }
+//
+//      ic->len++;
+//      // printf("Returning OK\n");
+//      return INDEXREAD_OK;
+//    }
+//  } while (1);
+//eof:
+//  ic->base.isValid = 0;
+//  return INDEXREAD_EOF;
 }
 
 static t_docId II_LastDocId(void *ctx) {
@@ -652,6 +786,7 @@ static void NI_Free(IndexIterator *it) {
  * return OK */
 static int NI_SkipTo(void *ctx, t_docId docId, RSIndexResult **hit) {
   NotContext *nc = ctx;
+  int retVal = INDEXREAD_OK;
 
   // do not skip beyond max doc id
   if (docId > nc->maxDocId) {
@@ -685,7 +820,11 @@ static int NI_SkipTo(void *ctx, t_docId docId, RSIndexResult **hit) {
 
   // OK means not found
   if (rc == INDEXREAD_OK) {
-    return INDEXREAD_NOTFOUND;
+    retVal = INDEXREAD_NOTFOUND;
+  }
+
+  while(rc == INDEXREAD_OK){
+    rc = nc->child->SkipTo(nc->child->ctx, ++docId, hit);
   }
 
 ok:
@@ -693,7 +832,12 @@ ok:
   nc->base.current->docId = docId;
   nc->lastDocId = docId;
   *hit = nc->base.current;
-  return INDEXREAD_OK;
+  return retVal;
+}
+
+static long long NI_EstimatedResultsAmount(void *ctx) {
+  NotContext *nc = ctx;
+  return nc->maxDocId;
 }
 
 /* Read from a NOT iterator. This is applicable only if the only or leftmost node of a query is a
@@ -702,48 +846,57 @@ static int NI_Read(void *ctx, RSIndexResult **hit) {
   NotContext *nc = ctx;
   if (nc->lastDocId > nc->maxDocId) return INDEXREAD_EOF;
 
-  RSIndexResult *cr = NULL;
-  // if we have a child, get the latest result from the child
-  if (nc->child) {
-    cr = IITER_CURRENT_RECORD(nc->child);
+  if(!nc->child || nc->child->mode == SORTED){
+    RSIndexResult *cr = NULL;
+    // if we have a child, get the latest result from the child
+    if (nc->child) {
+      cr = IITER_CURRENT_RECORD(nc->child);
 
-    if (cr == NULL || cr->docId == 0) {
-      nc->child->Read(nc->child->ctx, &cr);
+      if (cr == NULL || cr->docId == 0) {
+        nc->child->Read(nc->child->ctx, &cr);
+      }
     }
-  }
 
-  // advance our reader by one, and let's test if it's a valid value or not
-  nc->base.current->docId++;
-
-  // If we don't have a child result, or the child result is ahead of the current counter,
-  // we just increment our virtual result's id until we hit the child result's
-  // in which case we'll read from the child and bypass it by one.
-  if (cr == NULL || cr->docId > nc->base.current->docId) {
-    goto ok;
-  }
-
-  while (cr->docId == nc->base.current->docId) {
-    // advance our docId to the next possible id
+    // advance our reader by one, and let's test if it's a valid value or not
     nc->base.current->docId++;
 
-    // read the next entry from the child
-    if (nc->child->Read(nc->child->ctx, &cr) == INDEXREAD_EOF) {
-      break;
+    // If we don't have a child result, or the child result is ahead of the current counter,
+    // we just increment our virtual result's id until we hit the child result's
+    // in which case we'll read from the child and bypass it by one.
+    if (cr == NULL || cr->docId > nc->base.current->docId) {
+      goto ok;
+    }
+
+    while (cr->docId == nc->base.current->docId) {
+      // advance our docId to the next possible id
+      nc->base.current->docId++;
+
+      // read the next entry from the child
+      if (nc->child->Read(nc->child->ctx, &cr) == INDEXREAD_EOF) {
+        break;
+      }
+    }
+
+    // make sure we did not overflow
+    if (nc->base.current->docId > nc->maxDocId) {
+      return INDEXREAD_EOF;
+    }
+
+  ok:
+    // Set the next entry and return ok
+    nc->lastDocId = nc->base.current->docId;
+    if (hit) *hit = nc->base.current;
+    ++nc->len;
+
+    return INDEXREAD_OK;
+  }else{
+    if(!nc->child->IsMatch(nc->child, nc->base.current->docId++)){
+      nc->lastDocId = nc->base.current->docId;
+      if (hit) *hit = nc->base.current;
+      ++nc->len;
+      return INDEXREAD_OK;
     }
   }
-
-  // make sure we did not overflow
-  if (nc->base.current->docId > nc->maxDocId) {
-    return INDEXREAD_EOF;
-  }
-
-ok:
-  // Set the next entry and return ok
-  nc->lastDocId = nc->base.current->docId;
-  if (hit) *hit = nc->base.current;
-  ++nc->len;
-
-  return INDEXREAD_OK;
 }
 
 /* We always have next, in case anyone asks... ;) */
@@ -789,6 +942,9 @@ IndexIterator *NewNotIterator(IndexIterator *it, t_docId maxDocId, double weight
   ret->SkipTo = NI_SkipTo;
   ret->Abort = NI_Abort;
   ret->Rewind = NI_Rewind;
+  ret->EstimateResultsAmount = NI_EstimatedResultsAmount;
+
+  ret->mode = SORTED;
   ret->GetCurrent = NULL;
   return ret;
 }
@@ -849,6 +1005,11 @@ ok:
   nc->lastDocId = nc->base.current->docId = docId;
   *hit = nc->base.current;
   return INDEXREAD_OK;
+}
+
+static long long OI_EstimatedResultsAmmount(void *ctx) {
+  OptionalMatchContext *nc = ctx;
+  return nc->child->EstimateResultsAmount(nc->child->ctx);
 }
 
 /* Read has no meaning in the sense of an OPTIONAL iterator, so we just read the next record from
@@ -922,9 +1083,12 @@ IndexIterator *NewOptionalIterator(IndexIterator *it, t_docId maxDocId, double w
   ret->LastDocId = OI_LastDocId;
   ret->Len = OI_Len;
   ret->Read = OI_Read;
+  ret->EstimateResultsAmount = OI_EstimatedResultsAmmount;
   ret->SkipTo = OI_SkipTo;
   ret->Abort = OI_Abort;
   ret->Rewind = OI_Rewind;
+
+  ret->mode = nc->child->mode;
   return ret;
 }
 

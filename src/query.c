@@ -310,7 +310,7 @@ IndexIterator *Query_EvalTokenNode(QueryEvalCtx *q, QueryNode *qn) {
     return NULL;
   }
 
-  return NewReadIterator(ir);
+  return NewReadIterator(q->sctx->spec, ir);
 }
 
 static IndexIterator *iterateExpandedTerms(QueryEvalCtx *q, Trie *terms, const char *str,
@@ -356,7 +356,7 @@ static IndexIterator *iterateExpandedTerms(QueryEvalCtx *q, Trie *terms, const c
     }
 
     // Add the reader to the iterator array
-    its[itsSz++] = NewReadIterator(ir);
+    its[itsSz++] = NewReadIterator(q->sctx->spec, ir);
     if (itsSz == itsCap) {
       itsCap *= 2;
       its = realloc(its, itsCap * sizeof(*its));
@@ -565,7 +565,7 @@ static IndexIterator *Query_EvalTagPrefixNode(QueryEvalCtx *q, TagIndex *idx, Qu
 
   // Find all completions of the prefix
   while (TrieMapIterator_Next(it, &s, &sl, &ptr) && itsSz < RSGlobalConfig.maxPrefixExpansions) {
-    IndexIterator *ret = TagIndex_OpenReader(idx, q->docTable, s, sl, 1);
+    IndexIterator *ret = TagIndex_OpenReader(q->sctx->spec, idx, q->docTable, s, sl, 1);
     if (!ret) continue;
 
     // Add the reader to the iterator array
@@ -593,7 +593,7 @@ static IndexIterator *query_EvalSingleTagNode(QueryEvalCtx *q, TagIndex *idx, Qu
   IndexIterator *ret = NULL;
   switch (n->type) {
     case QN_TOKEN: {
-      ret = TagIndex_OpenReader(idx, q->docTable, n->tn.str, n->tn.len, weight);
+      ret = TagIndex_OpenReader(q->sctx->spec, idx, q->docTable, n->tn.str, n->tn.len, weight);
       break;
     }
     case QN_PREFX:
@@ -611,7 +611,7 @@ static IndexIterator *query_EvalSingleTagNode(QueryEvalCtx *q, TagIndex *idx, Qu
 
       sds s = sdsjoin(terms, n->pn.numChildren, " ");
 
-      ret = TagIndex_OpenReader(idx, q->docTable, s, sdslen(s), weight);
+      ret = TagIndex_OpenReader(q->sctx->spec, idx, q->docTable, s, sdslen(s), weight);
       sdsfree(s);
       break;
     }
@@ -1173,6 +1173,9 @@ QueryNode* RS_CreateNumericNode(IndexSpec* spec, const char* fieldName, double m
   if(fieldName){
     // todo: set fields mask somehow
   }
+  NumericFilter* flt = calloc(1, sizeof(NumericFilter));
+
+  qn->nn = (QueryNumericNode){.nf = flt};
   qn->nn.nf->fieldName = strdup(fieldName);
   qn->nn.nf->max = max;
   qn->nn.nf->min = min;

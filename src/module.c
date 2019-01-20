@@ -1053,6 +1053,45 @@ static bool RediSearch_RegisterApi(int (*registerApiCallback)(const char *funcna
   return true;
 }
 
+int TestNumericIndex(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
+  RediSearch_Field field = {
+      .fieldName = "num",
+      .fieldType = INDEX_TYPE_NUMERIC,
+  };
+  IndexSpec* sp = RS_CreateIndexSpec("test", &field, 1);
+  char buf[100];
+  RediSearch_FieldVal val;
+  int id = 0;
+  for(int i = 0 ; i < 100 ; i++){
+    for(int j = 0 ; j < 50000 ; j++){
+      sprintf(buf, "%d", id++);
+      val.fieldName = "num";
+      val.val.doubleVal = i;
+      RS_IndexSpecAddDocument(sp, buf, &val, 1);
+    }
+  }
+
+  struct timespec start;
+  struct timespec end;
+
+  clock_gettime(CLOCK_REALTIME, &start);
+  QueryNode* q = RS_CreateNumericNode(sp, "num", 0, 50, 1, 0);
+  ResultsIterator* iter = RS_GetResultsIterator(sp, q);
+  int count = 0;
+  while(RS_ResultsIteratorNext(sp, iter)){
+    ++count;
+  }
+  RS_ResultsIteratorFree(iter);
+  clock_gettime(CLOCK_REALTIME, &end);
+
+  long long readDuration = (long long)1000000000 * (end.tv_sec - start.tv_sec) +
+                           (end.tv_nsec - start.tv_nsec);
+  RedisModule_ReplyWithArray(ctx, 2);
+  RedisModule_ReplyWithLongLong(ctx, count);
+  RedisModule_ReplyWithLongLong(ctx, readDuration);
+  return REDISMODULE_OK;
+}
+
 int RediSearch_InitModuleInternal(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
 
   // Check that redis supports thread safe context. RC3 or below doesn't
@@ -1213,5 +1252,7 @@ int RediSearch_InitModuleInternal(RedisModuleCtx *ctx, RedisModuleString **argv,
   RM_TRY(RedisModule_CreateCommand, ctx, RS_DICT_DUMP, DictDumpCommand, "readonly", 1, 1, 1);
 
   RM_TRY(RedisModule_CreateCommand, ctx, RS_CONFIG, ConfigCommand, "readonly", 1, 1, 1);
+
+  RM_TRY(RedisModule_CreateCommand, ctx, "ft.testnumerticindex", TestNumericIndex, "readonly", 0, 0, 0);
   return REDISMODULE_OK;
 }

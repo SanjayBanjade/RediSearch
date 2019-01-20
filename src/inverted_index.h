@@ -168,6 +168,10 @@ void IR_Free(IndexReader *ir);
 /* Read an entry from an inverted index */
 int IR_GenericRead(IndexReader *ir, RSIndexResult *res);
 
+int IR_IsMatch(IndexIterator* iter, t_docId id);
+
+long long IR_EstimateResultsAmount(void *ctx);
+
 /* Read an entry from an inverted index into RSIndexResult */
 int IR_Read(void *ctx, RSIndexResult **e);
 
@@ -191,7 +195,7 @@ t_docId IR_LastDocId(void *ctx);
 void IR_Seek(IndexReader *ir, t_offset offset, t_docId docId);
 
 /* Create a reader iterator that iterates an inverted index record */
-IndexIterator *NewReadIterator(IndexReader *ir);
+IndexIterator *NewReadIterator(IndexSpec* spec, IndexReader *ir);
 
 int IndexBlock_Repair(IndexBlock *blk, DocTable *dt, IndexFlags flags, IndexRepairParams *params);
 
