@@ -65,7 +65,7 @@ RediSeachStatus REDISEARCH_API_FUNC(RediSearch_IndexSpecAddField)(IndexSpec* spe
  * Adding a new document to the index. If the document already exists the field value in updated with the
  * new given value.
  */
-RediSeachStatus REDISEARCH_API_FUNC(RediSearch_IndexSpecAddDocument)(IndexSpec* spec, const char* docId, RediSearch_FieldVal* vals, size_t len);
+RediSeachStatus REDISEARCH_API_FUNC(RediSearch_IndexSpecAddDocument)(IndexSpec* spec, const char* docId, size_t docIdLen, RediSearch_FieldVal* vals, size_t len);
 
 /**
  * Creating a union node

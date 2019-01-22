@@ -1025,7 +1025,7 @@ static int RS_CheckApiVersionCompatibility(int currVersion){
 
 RediSeachStatus RS_IndexSpecAddField(IndexSpec* sp, RediSearch_Field* field);
 IndexSpec* RS_CreateIndexSpec(const char* specName, RediSearch_Field* fields, size_t len);
-RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, RediSearch_FieldVal* vals, size_t len);
+RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, size_t docIdLen, RediSearch_FieldVal* vals, size_t len);
 QueryNode* RS_CreateUnionNode(IndexSpec* spec, const char* fieldName);
 void RS_UnionNodeAddChild(QueryNode* unionNode, QueryNode* child);
 QueryNode* RS_CreateNumericNode(IndexSpec* spec, const char* fieldName, double min, double max, int inclusiveMin, int inclusiveMax);
@@ -1067,7 +1067,7 @@ int TestNumericIndex(RedisModuleCtx *ctx, RedisModuleString **argv, int argc) {
       sprintf(buf, "%d", id++);
       val.fieldName = "num";
       val.val.doubleVal = i;
-      RS_IndexSpecAddDocument(sp, buf, &val, 1);
+      RS_IndexSpecAddDocument(sp, buf, strlen(buf), &val, 1);
     }
   }
 

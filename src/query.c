@@ -1228,14 +1228,34 @@ ResultsIterator* RS_GetResultsIterator(IndexSpec* spec, QueryNode* qn){
   return QAST_Iterate(&ast, &opts, &sctx, NULL, &status);
 }
 
+long long totalDuration = 0;
+long long totalTotalDuration = 0;
+
 const char* RS_ResultsIteratorNext(IndexSpec* spec, ResultsIterator* iter){
+  struct timespec originStart;
+  struct timespec start;
+  struct timespec end;
   RSIndexResult *e;
+//  clock_gettime(CLOCK_REALTIME, &originStart);
   while(iter->Read(iter->ctx, &e) != INDEXREAD_EOF){
-    RSDocumentMetadata *doc = DocTable_Get(&spec->docs, e->docId);
-    if(doc){
-      return doc->keyPtr;
-    }
+    return (char*)DocTable_GetDocId(&spec->docs, e->docId);
+//    clock_gettime(CLOCK_REALTIME, &start);
+//    RSDocumentMetadata *doc = DocTable_Get(&spec->docs, e->docId);
+//    clock_gettime(CLOCK_REALTIME, &end);
+//    long long readDuration = (long long)1000000000 * (end.tv_sec - start.tv_sec) +
+//                             (end.tv_nsec - start.tv_nsec);
+//    long long tDuration = (long long)1000000000 * (end.tv_sec - originStart.tv_sec) +
+//                             (end.tv_nsec - originStart.tv_nsec);
+//    totalDuration += readDuration;
+//    totalTotalDuration += tDuration;
+//    if(doc){
+//      return doc->keyPtr;
+//    }
   }
+//  printf("total duration inside DocTable_Get : %lld\r\n", totalDuration);
+//  printf("total duration : %lld\r\n", totalTotalDuration);
+  totalDuration = 0;
+  totalTotalDuration = 0;
   return NULL;
 
 }

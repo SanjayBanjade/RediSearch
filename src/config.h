@@ -137,7 +137,7 @@ int RSConfig_SetOption(RSConfig *config, RSConfigOptions *options, const char *n
 
 sds RSConfig_GetInfoString(const RSConfig *config);
 
-#define DEFAULT_DOC_TABLE_SIZE 1000000
+#define DEFAULT_DOC_TABLE_SIZE 10000000
 #define MAX_DOC_TABLE_SIZE 100000000
 #define CONCURRENT_SEARCH_POOL_DEFAULT_SIZE 20
 #define CONCURRENT_INDEX_POOL_DEFAULT_SIZE 8

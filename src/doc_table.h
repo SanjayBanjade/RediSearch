@@ -66,6 +66,8 @@ typedef struct {
   size_t sortablesSize;
 
   DMDChain *buckets;
+  RSDocumentMetadata** dmds;
+  long long* ids;
   DocIdMap dim;
 
 } DocTable;
@@ -92,9 +94,15 @@ DocTable NewDocTable(size_t cap, size_t max_size);
 
 #define DocTable_New(cap) NewDocTable(cap, RSGlobalConfig.maxDocTableSize)
 
+static inline long long* DocTable_GetDocId(const DocTable *t, t_docId docId){
+  return &t->ids[docId - 1];
+}
+
 /* Get the metadata for a doc Id from the DocTable.
  *  If docId is not inside the table, we return NULL */
-RSDocumentMetadata *DocTable_Get(const DocTable *t, t_docId docId);
+static inline RSDocumentMetadata* DocTable_Get(const DocTable *t, t_docId docId){
+  return t->dmds[docId - 1];
+}
 
 RSDocumentMetadata *DocTable_GetByKeyR(const DocTable *r, RedisModuleString *s);
 
@@ -180,7 +188,7 @@ void DMD_Free(RSDocumentMetadata *);
 /* Decrement the refcount of the DMD object, freeing it if we're the last reference */
 static inline void DMD_Decref(RSDocumentMetadata *dmd) {
   if (dmd && !--dmd->ref_count) {
-    DMD_Free(dmd);
+//    DMD_Free(dmd);
   }
 }
 

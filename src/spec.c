@@ -527,7 +527,7 @@ IndexSpec* RS_CreateIndexSpec(const char* specName, RediSearch_Field* fields, si
 	return sp;
 }
 
-RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, RediSearch_FieldVal* vals, size_t len){
+RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, size_t docIdLen, RediSearch_FieldVal* vals, size_t len){
   Document doc;
   AddDocumentOptions opts = {0};
   opts.options = 0;
@@ -536,7 +536,7 @@ RediSeachStatus RS_IndexSpecAddDocument(IndexSpec* spec, const char* docId, Redi
 
   RedisModuleCtx* ctx = RedisModule_GetThreadSafeContext(NULL);
 
-  RedisModuleString* docIdRedisStr = RedisModule_CreateString(ctx, docId, strlen(docId));
+  RedisModuleString* docIdRedisStr = RedisModule_CreateString(ctx, docId, docIdLen);
   RedisModuleString* valRedisStr[len];
   Document_Init(&doc, docIdRedisStr, 1.0, len, DEFAULT_LANGUAGE, NULL, 0);
   for(size_t i = 0 ; i < len ; ++i){
